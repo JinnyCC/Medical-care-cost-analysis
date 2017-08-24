@@ -1,0 +1,359 @@
+---
+title: "Investigation of drivers of care cost among patients"
+---
+Data source: clinical and financial data of patinets hopsitalized for a certain condition.
+</div>
+
+##Medication cost 
+
+Here, I am going to analyze the medication cost data based of different patients and search for insights about the drivers of cost of care. 
+## Getting Started
+
+### Load packages
+
+```{r load-packages, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(data.table)
+library(MASS)
+```
+
+### Load data
+```{r load-data, message=FALSE}
+path <- "./input"
+bill_amount <- fread(file.path(path, "bill_amount.csv"))
+bill_infor<- fread(file.path(path, "bill_id.csv"))
+clinical_data <- fread(file.path(path, "clinical_data.csv"))
+demographics <- fread(file.path(path, "demographics.csv"))
+```
+
+### Data cleaning
+Transform date type
+```{r}
+clinical_data$date_of_admission <- as.Date(clinical_data$date_of_admission)
+clinical_data$date_of_discharge <- as.Date(clinical_data$date_of_discharge)
+#the smallest year value is 30 which is less than 17, therefore the birth year of patient stars with 19XX.
+demographics$date_of_birth <- as.Date(format(as.Date(demographics$date_of_birth, format='%d/%m/%y'), '19%y-%m-%d'))
+bill_infor$date_of_admission <- as.Date(bill_infor$date_of_admission)
+```
+
+### Unify representation of list values
+```{r unify data in clinical_data}
+#seperate int with char
+clinical_data$medical_history_3<- recode(clinical_data$medical_history_3, 'Yes'=1, 'No'=0, '1'=1, '0'=0)
+```
+
+```{r unify data in demographics}
+demographics$gender <- recode(demographics$gender, 'f'='Female', 'm'="Male")
+demographics$race <- recode(demographics$race, 'chinese'='Chinese', 'India'='Indian')
+demographics$resident_status <- recode(demographics$resident_status, 'Singapore citizen'='Citizen', 'Singaporean'='Citizen')
+```
+
+### Reshape data
+Transform characters into factor
+```{r reshape-data}
+names(clinical_data)[1]<-'patient_id'
+clinical_data$patient_id <- as.factor(clinical_data$patient_id)
+clinical_data$medical_history_2[is.na(clinical_data$medical_history_2)] <- 0.5
+clinical_data$medical_history_5[is.na(clinical_data$medical_history_5)] <- 0.5
+# NA value in medical_history_2 and 5 is replaced with 0.5 to avoid wasting information for the whole data row in the following data training and prediction process. 
+clinical_data$medical_history_1 <- as.factor(clinical_data$medical_history_1)
+clinical_data$medical_history_2 <- as.factor(clinical_data$medical_history_2)
+clinical_data$medical_history_3 <- as.factor(clinical_data$medical_history_3)
+clinical_data$medical_history_4 <- as.factor(clinical_data$medical_history_4)
+clinical_data$medical_history_5 <- as.factor(clinical_data$medical_history_5)
+clinical_data$medical_history_6 <- as.factor(clinical_data$medical_history_6)
+clinical_data$medical_history_7 <- as.factor(clinical_data$medical_history_7)
+clinical_data$preop_medication_1 <- as.factor(clinical_data$preop_medication_1)
+clinical_data$preop_medication_2 <- as.factor(clinical_data$preop_medication_2)
+clinical_data$preop_medication_3 <- as.factor(clinical_data$preop_medication_3)
+clinical_data$preop_medication_4 <- as.factor(clinical_data$preop_medication_4)
+clinical_data$preop_medication_5 <- as.factor(clinical_data$preop_medication_5)
+clinical_data$preop_medication_6 <- as.factor(clinical_data$preop_medication_6)
+clinical_data$symptom_1 <- as.factor(clinical_data$symptom_1)
+clinical_data$symptom_2 <- as.factor(clinical_data$symptom_2)
+clinical_data$symptom_3 <- as.factor(clinical_data$symptom_3)
+clinical_data$symptom_4 <- as.factor(clinical_data$symptom_4)
+clinical_data$symptom_5 <- as.factor(clinical_data$symptom_5)
+bill_infor$patient_id <- as.factor(bill_infor$patient_id)
+demographics$patient_id <- as.factor(demographics$patient_id)
+demographics$gender <- as.factor(demographics$gender)
+demographics$race <- as.factor(demographics$race)
+demographics$resident_status <- as.factor(demographics$resident_status)
+bill_amount$bill_id <- as.factor(bill_amount$bill_id)
+bill_infor$bill_id <- as.factor(bill_infor$bill_id)
+```
+
+###check repeated entry
+```{r repeated entry check}
+#bill_amount[duplicated(bill_amount),]
+#bill_infor[duplicated(bill_infor),]
+#clinical_data[duplicated(clinical_data),]
+#demographics[duplicated(demographics),]
+```
+No repeated entry was found
+
+###aggregate bill information with bill amount and calulate the total bill amount for each medical record.
+```{r bill data processing}
+bill_infor <- bill_infor %>%
+  inner_join(bill_amount, by='bill_id')
+bill_infor <- bill_infor %>%
+  dplyr::select(-bill_id)
+agg_bill_infor <- bill_infor %>%
+  group_by(patient_id, date_of_admission) %>%
+  summarise_each(funs(sum(amount)))
+```
+
+###extract date values from patient_record
+```{r}
+clinic_tempt <- clinical_data %>%
+  mutate(admission_year=year(date_of_admission)) %>%
+  mutate(admission_month=month(date_of_admission)) %>%
+  mutate(admission_day=mday(date_of_admission)) %>%
+  mutate(discharge_year=year(date_of_discharge)) %>%
+  mutate(discharge_month=month(date_of_discharge)) %>%
+  mutate(discharge_day=mday(date_of_discharge)) %>%
+  mutate(stay_duration=as.numeric(difftime(date_of_discharge,date_of_admission, units='days'))) 
+```
+
+### Prepare data file for analysis
+```{r join table}
+data=merge(agg_bill_infor, clinic_tempt, by=c('patient_id','date_of_admission'))
+data <- data %>%
+  inner_join(demographics, by= 'patient_id')
+```
+
+### extract age and birth information
+```{r extract age and birth information}
+data <- data %>%
+  mutate(age=year(date_of_admission)-year(date_of_birth)) %>%
+  mutate(birth_month=month(date_of_birth)) %>%
+  mutate(birth_day=mday(date_of_birth)) %>%
+  dplyr::select(-date_of_admission,-date_of_discharge, -date_of_birth, -patient_id)
+```
+
+```{r}
+rm(bill_amount, bill_infor, agg_bill_infor, clinic_tempt, clinical_data, demographics)
+```
+
+<div id="Exploratory data analysis">
+**Exploratory data analysis:**
+
+```{r age vs bill amount}
+ggplot(data=data, aes(amount)) +
+  geom_histogram(binwidth = 3000)
+summary(data$amount)
+```
+The distributin of total bill amount for every medical record shows a slighly right skewed pattern. The average cost of each medical record is around 21860 sgd. 
+
+```{r compare bill_amount among different values of factor variables by statistics}
+data %>%
+  group_by(medical_history_1) %>%
+  summarize(mean_his1=mean(amount), sd_his1=sd(amount)) 
+data%>%
+  group_by(medical_history_2) %>%
+  summarize(mean_his2=mean(amount), sd_his2=sd(amount))
+data%>%
+  group_by(medical_history_3) %>%
+  summarize(mean_his3=mean(amount), sd_his3=sd(amount))
+data %>%
+  group_by(medical_history_4) %>%
+  summarize(mean_his4=mean(amount), sd_his4=sd(amount)) 
+data%>%
+  group_by(medical_history_5) %>%
+  summarize(mean_his5=mean(amount), sd_his5=sd(amount))
+data%>%
+  group_by(medical_history_6) %>%
+  summarize(mean_his6=mean(amount), sd_his6=sd(amount))
+data %>%
+  group_by(medical_history_7) %>%
+  summarize(mean_his7=mean(amount), sd_his7=sd(amount)) 
+data%>%
+  group_by(preop_medication_1) %>%
+  summarize(mean_pre1=mean(amount), sd_pre1=sd(amount))
+data%>%
+  group_by(preop_medication_2) %>%
+  summarize(mean_pre2=mean(amount), sd_pre2=sd(amount))
+data%>%
+  group_by(preop_medication_3) %>%
+  summarize(mean_pre3=mean(amount), sd_pre3=sd(amount))
+data%>%
+  group_by(preop_medication_4) %>%
+  summarize(mean_pre4=mean(amount), sd_pre4=sd(amount))
+data%>%
+  group_by(preop_medication_5) %>%
+  summarize(mean_pre5=mean(amount), sd_pre5=sd(amount))
+data%>%
+  group_by(preop_medication_6) %>%
+  summarize(mean_pre5=mean(amount), sd_pre6=sd(amount))
+data%>%
+  group_by(symptom_1) %>%
+  summarize(mean_sym1=mean(amount), sd_sym1=sd(amount))
+data%>%
+  group_by(symptom_2) %>%
+  summarize(mean_sym2=mean(amount), sd_sym2=sd(amount))
+data%>%
+  group_by(symptom_3) %>%
+  summarize(mean_sym3=mean(amount), sd_sym3=sd(amount))
+data%>%
+  group_by(symptom_4) %>%
+  summarize(mean_sym4=mean(amount), sd_sym4=sd(amount))
+data%>%
+  group_by(symptom_5) %>%
+  summarize(mean_sym5=mean(amount), sd_sym5=sd(amount))
+data%>%
+  group_by(gender) %>%
+  summarize(mean_gender=mean(amount), sd_gender=sd(amount))
+data%>%
+  group_by(race) %>%
+  summarize(mean_race=mean(amount), sd_race=sd(amount))
+data%>%
+  group_by(resident_status) %>%
+  summarize(mean_resstu=mean(amount), sd_resstu=sd(amount))
+```
+```{r compare bill_amount among different values of factor variables by plot}
+ggplot(data=data, aes(x=medical_history_1, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=medical_history_2, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=medical_history_3, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=medical_history_4, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=medical_history_5, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=medical_history_6, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=medical_history_7, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=preop_medication_1, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=preop_medication_2, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=preop_medication_3, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=preop_medication_4, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=preop_medication_5, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=preop_medication_6, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=symptom_1, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=symptom_2, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=symptom_3, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=symptom_4, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=symptom_5, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=gender, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=race, y=amount)) +
+         geom_boxplot()
+ggplot(data=data, aes(x=resident_status, y=amount)) +
+         geom_boxplot()
+```
+
+```{r compare bill_amount among different values of numerical variables by plot}
+ggplot(data=data, aes(x=cut(lab_result_1,seq(9,27,3)), y=amount)) +
+         geom_boxplot() + labs(x = "lab_result_1")
+ggplot(data=data, aes(x=cut(lab_result_2, seq(16,38,4)), y=amount)) +
+         geom_boxplot() + labs(x = "lab_result_2")
+ggplot(data=data, aes(x=cut(lab_result_3, seq(50,160,20)), y=amount)) +
+         geom_boxplot() + labs(x = "lab_result_3")
+ggplot(data=data, aes(x=cut(weight, seq(30,140,20)), y=amount)) +
+         geom_boxplot() + labs(x = "weight")
+ggplot(data=data, aes(x=cut(height, seq(150, 190,10)), y=amount)) +
+         geom_boxplot() + labs(x = "height")
+ggplot(data=data, aes(x=cut(age,seq(10,100,20)), y=amount)) +
+         geom_boxplot() + labs(x = "age")
+ggplot(data=data, aes(x=cut(stay_duration,seq(0,25,5)), y=amount)) +
+         geom_boxplot() + labs(x = "stay_duration")
+ggplot(data=data, aes(x=as.factor(admission_year), y=amount)) +
+         geom_boxplot() + labs(x = "admission_year")
+ggplot(data=data, aes(x=as.factor(admission_month), y=amount)) +
+         geom_boxplot() + labs(x = "admission_month")
+ggplot(data=data, aes(x=as.factor(discharge_year), y=amount)) +
+         geom_boxplot() + labs(x = "discharge_year")
+ggplot(data=data, aes(x=as.factor(discharge_month), y=amount)) +
+         geom_boxplot() + labs(x = "discharge_month")
+ggplot(data=data, aes(x=as.factor(birth_month), y=amount)) +
+         geom_boxplot() + labs(x = "birth_month")
+```
+```{r}
+ggplot(data=data, aes(x=cut(lab_result_1,seq(9,27,3)), y=amount)) +
+         geom_boxplot() + labs(x = "lab_result_1")
+ggplot(data=data, aes(x=cut(lab_result_2, seq(18,36,4)), y=amount)) +
+         geom_boxplot() + labs(x = "lab_result_2")
+ggplot(data=data, aes(x=cut(lab_result_3, seq(50,160,20)), y=amount)) +
+         geom_boxplot() + labs(x = "lab_result_3")
+```
+
+
+
+## Multiple linear regression
+```{r divide train and test data}
+set.seed(101) 
+sample <- sample.int(n = nrow(data), size = floor(.9*nrow(data)), replace = F)
+data_train <- data[sample, ]
+data_test  <- data[-sample, ]
+```
+
+```{r multiple regression}
+m_bill_amount <- lm(amount ~ medical_history_1+ medical_history_2+medical_history_3+medical_history_4+ medical_history_5+medical_history_6+medical_history_7+preop_medication_1+preop_medication_2+preop_medication_3+preop_medication_4+preop_medication_5+preop_medication_6+symptom_1+symptom_2+symptom_3+symptom_4+symptom_5+lab_result_1+lab_result_2+lab_result_3+weight+ height+ admission_year+admission_month+admission_day+ discharge_year+ discharge_month+ discharge_day+stay_duration+gender+race+resident_status+age+birth_month+birth_day, data = data_train)
+summary(m_bill_amount)
+```
+
+```{r diagonostic plots of multiple regression}
+layout(matrix(c(1,2,3,4),2,2))
+plot(m_bill_amount)
+```
+The diagnostic plots indicate that there may exist non-linear relationship between predictor variables and outcome variable. Therefore, a transformation method to add nonlinearity to the model, exponential model, quadratic, cubic, quadratic model was tested. The 3.5 power root transformation of the outcome variable yield the best coefficient of determination (R^2). 
+
+```{r add nonlinearity to the model}
+trans_m_bill_amount <- lm(amount^(1/3.5) ~ medical_history_1+ medical_history_2+medical_history_3+medical_history_4+ medical_history_5+medical_history_6+medical_history_7+preop_medication_1+preop_medication_2+preop_medication_3+preop_medication_4+preop_medication_5+preop_medication_6+symptom_1+symptom_2+symptom_3+symptom_4+symptom_5+lab_result_1+lab_result_2+lab_result_3+weight+ height+ admission_year+admission_month+admission_day+ discharge_year+ discharge_month+ discharge_day+stay_duration+gender+race+resident_status+age+birth_month+birth_day, data = data_train)
+summary(trans_m_bill_amount)
+layout(matrix(c(1,2,3,4),2,2))
+plot(trans_m_bill_amount)
+```
+
+### Akaike Information criterion (AIC) is used for model selection.
+```{r stepwise model selection by AIC}
+trans_m_drop_bill_amount <- lm(amount^(1/3.5) ~ medical_history_1+ medical_history_2+medical_history_3+medical_history_4+ medical_history_5+medical_history_6+medical_history_7+preop_medication_1+preop_medication_2+preop_medication_3+preop_medication_4+preop_medication_5+preop_medication_6+symptom_1+symptom_2+symptom_3+symptom_4+symptom_5+lab_result_1+lab_result_2+lab_result_3+weight+ height+ admission_year+admission_month+admission_day+ discharge_year+ discharge_month+ discharge_day+stay_duration+gender+race+resident_status+age+birth_month+birth_day, data = data_train)
+step <- stepAIC(trans_m_drop_bill_amount, direction='both')
+step$anova 
+```
+The result shows that medical_history_1~7, preop_medication_1,2,3,5,6, symptom_1~5, patient age, weight, height, birth_month, dicharge_month, stay_duration, rae, resident_status are important drivers for the medication cost. 
+
+Model with the minimum AIC value:
+```{r final model with nonlinearity}
+trans_m_drop_bill_amount <- lm(amount^(1/3.5) ~ medical_history_1 + medical_history_2 + medical_history_3 + 
+    medical_history_4 + medical_history_5 + medical_history_6 + 
+    medical_history_7 + preop_medication_1 + preop_medication_2 + 
+    preop_medication_3 + preop_medication_5 + preop_medication_6 + 
+    symptom_1 + symptom_2 + symptom_3 + symptom_4 + symptom_5 + 
+    weight + height + discharge_month + stay_duration + race + 
+    resident_status + age + birth_month, data = data_train)
+summary(trans_m_drop_bill_amount )
+layout(matrix(c(1,2,3,4),2,2))
+plot(trans_m_drop_bill_amount)
+```
+### Prediction
+
+The next step is use the trained best model to predict the rest 10% of data. 
+```{r prediction using the selectd model}
+test_pre <- as.data.frame(predict(trans_m_drop_bill_amount, data_test, interval="predict", level=0.95))
+test_pre=as.data.frame(test_pre^(3.5))
+```
+
+The predicted amount variable is recorded in the test_pre dataframe. The accuracy for prediction can be calculated as one minus avarage of relative predition error. 
+```{r calculate prediction accuracy}
+error=abs(test_pre$fit-data_test$amount)/data_test$amount
+accuracy=1-sum(error)/length(error)
+accuracy
+```
+
+
+
