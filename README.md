@@ -1,5 +1,6 @@
 # Medical-care-cost-analysis
 This project utilize multiple regression to analyse driving factors for medical care cost. 
+The data structure can be found in the relational schema. 
 The code contains four parts:
 1. Data cleaning and reshaping, feature extraction.
 2. Exploratory data analysis.
